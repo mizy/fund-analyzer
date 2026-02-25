@@ -3,3 +3,16 @@ dist
 .DS_Store
 *.log
 .env
+
+# 运行产物
+*.json
+!package.json
+!tsconfig.json
+*.html
+*_report.md
+
+# 开发文档
+ARCHITECTURE_REFACTOR_PLAN.md
+REVIEW_IMPROVEMENTS.md
+SCORING_MODEL_ANALYSIS.md
+FUND_METRICS.md

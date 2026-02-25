@@ -1,5 +1,20 @@
 export type FundCategory = 'bond' | 'balanced' | 'equity';
 
+// 风险层级分类
+export enum RiskTier {
+  VERY_LOW = 'very_low',       // 货币基金、超短债
+  LOW = 'low',                 // 纯债、短债、一级债基
+  MEDIUM = 'medium',           // 二级债基、偏债混合、FOF
+  MEDIUM_HIGH = 'medium_high', // 偏股混合、股债平衡
+  HIGH = 'high',               // 股票型、指数型、行业主题
+}
+
+export interface TierBenchmark {
+  sharpeBenchmark: number;     // 夏普满分基准
+  returnBenchmark: number;     // 收益满分基准（年化）
+  drawdownBenchmark: number;   // 回撤满分基准
+}
+
 export interface FundBasicInfo {
   code: string;
   name: string;
@@ -13,6 +28,7 @@ export interface PeriodRiskMetrics {
   maxDrawdown: number;    // %
   volatility: number;     // % 年化
   sortinoRatio: number;
+  calmarRatio: number;    // 年化收益 / |最大回撤|
 }
 
 export type TimeWindow = '1y' | '3y' | 'all';
@@ -57,11 +73,18 @@ export interface FundScoreDetail {
 }
 
 export interface FundScore {
-  returnScore: number; // 满40
-  riskScore: number; // 满30
-  overallScore: number; // 满30
-  totalScore: number; // 满100
+  returnScore: number; // 收益能力35
+  riskScore: number; // 风险控制35
+  overallScore: number; // 综合评价30
+  totalScore: number; // 满100（= marketScore），动量惩罚后可能低于维度之和
+  momentumPenalty: number; // 动量反转惩罚扣分（近1年涨幅过高时）
   details: FundScoreDetail[];
+  // 分层评分
+  riskTier: RiskTier;
+  tierScore: number; // 同类评分（使用分层基准）
+  marketScore: number; // 全市场评分（= totalScore）
+  tierRank?: string; // 如 "前5%"
+  tierDetails: FundScoreDetail[]; // 同类评分详情
 }
 
 export interface DeepFundScore {

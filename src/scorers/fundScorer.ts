@@ -1,4 +1,6 @@
-import type { FundData, FundScore, FundScoreDetail, FundCategory, DeepFundScore, QuantMetrics, FundHoldings, PeriodRiskMetrics } from '../types/fund.js';
+/** @entry scorer - 基金评分模型 */
+import { RiskTier } from '../types/fund.js';
+import type { FundData, FundScore, FundScoreDetail, FundCategory, PeriodRiskMetrics, TierBenchmark } from '../types/fund.js';
 
 // --- 基金类型识别 ---
 
@@ -7,6 +9,58 @@ export function classifyFund(type: string): FundCategory {
   if (/股票|偏股|指数/.test(type)) return 'equity';
   return 'balanced'; // 混合型-平衡/灵活配置/FOF/QDII/其他
 }
+
+// --- 风险层级分类 ---
+
+/** @entry 根据基金类型和波动率分类风险层级，冲突时取较高风险 */
+export function classifyRiskTier(fundType: string, volatility: number): RiskTier {
+  // 1. 基于类型的初步分类
+  let typeTier: RiskTier;
+  if (/货币|超短债/.test(fundType)) {
+    typeTier = RiskTier.VERY_LOW;
+  } else if (/纯债|短债|中短债|长债/.test(fundType) || /债券.*一级/.test(fundType)) {
+    typeTier = RiskTier.LOW;
+  } else if (/偏债|债券|FOF/.test(fundType)) {
+    typeTier = RiskTier.MEDIUM;
+  } else if (/偏股混合|平衡|灵活配置/.test(fundType)) {
+    typeTier = RiskTier.MEDIUM_HIGH;
+  } else if (/股票|指数|偏股/.test(fundType)) {
+    typeTier = RiskTier.HIGH;
+  } else {
+    typeTier = RiskTier.MEDIUM; // 默认中等
+  }
+
+  // 2. 基于波动率的分类
+  let volTier: RiskTier;
+  const vol = Number.isFinite(volatility) ? volatility : 0;
+  if (vol < 0.5) {
+    volTier = RiskTier.VERY_LOW;
+  } else if (vol < 3) {
+    volTier = RiskTier.LOW;
+  } else if (vol < 10) {
+    volTier = RiskTier.MEDIUM;
+  } else if (vol < 20) {
+    volTier = RiskTier.MEDIUM_HIGH;
+  } else {
+    volTier = RiskTier.HIGH;
+  }
+
+  // 3. 冲突时取较高风险层级
+  const tierOrder = [RiskTier.VERY_LOW, RiskTier.LOW, RiskTier.MEDIUM, RiskTier.MEDIUM_HIGH, RiskTier.HIGH];
+  const typeIdx = tierOrder.indexOf(typeTier);
+  const volIdx = tierOrder.indexOf(volTier);
+  return tierOrder[Math.max(typeIdx, volIdx)];
+}
+
+// --- 分层评分基准 ---
+
+const TIER_BENCHMARKS: Record<RiskTier, TierBenchmark> = {
+  [RiskTier.VERY_LOW]: { sharpeBenchmark: 1.0, returnBenchmark: 2.5, drawdownBenchmark: 0.1 },
+  [RiskTier.LOW]:      { sharpeBenchmark: 2.0, returnBenchmark: 6,   drawdownBenchmark: 1 },
+  [RiskTier.MEDIUM]:   { sharpeBenchmark: 1.5, returnBenchmark: 15,  drawdownBenchmark: 5 },
+  [RiskTier.MEDIUM_HIGH]: { sharpeBenchmark: 1.2, returnBenchmark: 25, drawdownBenchmark: 15 },
+  [RiskTier.HIGH]:     { sharpeBenchmark: 1.0, returnBenchmark: 35,  drawdownBenchmark: 20 },
+};
 
 // --- 各类型基准值配置 ---
 
@@ -46,58 +100,100 @@ const VOLATILITY_BENCHMARKS = {
   equity:   { full: 15, high: 20, mid: 25, low: 30 },
 } as const;
 
+const CALMAR_BENCHMARKS = {
+  bond:     { full: 2.0, high: 1.5, mid: 1.0, low: 0.5 },
+  balanced: { full: 3.0, high: 2.0, mid: 1.0, low: 0.5 },
+  equity:   { full: 3.0, high: 2.0, mid: 1.0, low: 0.5 },
+} as const;
+
 // --- 通用评分函数 ---
 
 type Benchmark = { full: number; high: number; mid: number; low: number };
 
+/** 安全数值：NaN/Infinity 返回给定 fallback（默认 0） */
+function safeNum(value: number, fallback = 0): number {
+  return Number.isFinite(value) ? value : fallback;
+}
+
 /** 越高越好的指标（收益、夏普、索提诺） */
 function scoreHigherBetter(value: number, b: Benchmark, maxScore: number): number {
-  if (value >= b.full) return maxScore;
-  if (value >= b.high) return maxScore * 0.8;
-  if (value >= b.mid) return maxScore * 0.6;
-  if (value >= b.low) return maxScore * 0.33;
-  return Math.max(0, maxScore * 0.2 * (value / (b.low || 1)));
+  const v = safeNum(value);
+  if (v >= b.full) return maxScore;
+  if (v >= b.high) return maxScore * SCORE_TIER.HIGH;
+  if (v >= b.mid) return maxScore * SCORE_TIER.MID_HIGHER;
+  if (v >= b.low) return maxScore * SCORE_TIER.LOW;
+  return Math.max(0, maxScore * SCORE_TIER.MIN * (v / (b.low || 1)));
 }
 
 /** 越低越好的指标（回撤、波动率） */
 function scoreLowerBetter(value: number, b: Benchmark, maxScore: number): number {
-  if (value <= b.full) return maxScore;
-  if (value <= b.high) return maxScore * 0.8;
-  if (value <= b.mid) return maxScore * 0.53;
-  if (value <= b.low) return maxScore * 0.33;
-  return Math.max(maxScore * 0.13, maxScore * 0.33 * (b.low / (value || 1)));
+  const v = safeNum(value);
+  if (v <= b.full) return maxScore;
+  if (v <= b.high) return maxScore * SCORE_TIER.HIGH;
+  if (v <= b.mid) return maxScore * SCORE_TIER.MID_LOWER;
+  if (v <= b.low) return maxScore * SCORE_TIER.LOW;
+  return Math.max(maxScore * SCORE_TIER.FLOOR, maxScore * SCORE_TIER.LOW * (b.low / (v || 1)));
 }
 
 // --- 不受基金类型影响的评分 ---
 
-function scoreMorningstar(rating: number): number {
-  // 5星=15, 4星=12, 3星=9, 2星=6, 1星=3, 0=0
-  return Math.min(15, Math.max(0, rating * 3));
+function scoreMorningstar(rating: number, maxScore: number = 7): number {
+  // 按满分比例：5星=满分, 4星=0.8x, 3星=0.6x, 2星=0.4x, 1星=0.2x, 0=0
+  return Math.min(maxScore, Math.max(0, rating * (maxScore / 5)));
 }
 
-function scoreFundSize(size: number): number {
-  if (size >= 2 && size <= 100) return 5;
-  if (size > 100 && size <= 300) return 4;
-  if (size >= 1 && size < 2) return 3;
-  if (size > 300) return 2;
-  return 1;
+function scoreFundSize(size: number, maxScore: number = 5): number {
+  if (size >= 2 && size <= 100) return maxScore;
+  if (size > 100 && size <= 300) return maxScore * 0.8;
+  if (size >= 1 && size < 2) return maxScore * 0.6;
+  if (size > 300) return maxScore * 0.4;
+  return maxScore * 0.2;
 }
 
-function scoreManagerYears(years: number): number {
-  if (years >= 7) return 5;
-  if (years >= 5) return 4;
-  if (years >= 3) return 3;
-  if (years >= 1) return 2;
-  return 1;
+function scoreManagerYears(years: number, maxScore: number = 5): number {
+  if (years >= 7) return maxScore;
+  if (years >= 5) return maxScore * 0.8;
+  if (years >= 3) return maxScore * 0.6;
+  if (years >= 1) return maxScore * 0.4;
+  return maxScore * 0.2;
 }
 
-function scoreFeeRate(rate: number): number {
-  if (rate <= 0.8) return 5;
-  if (rate <= 1.2) return 4;
-  if (rate <= 1.5) return 3;
-  if (rate <= 2.0) return 2;
-  return 1;
+function scoreFeeRate(rate: number, maxScore: number = 3): number {
+  if (rate <= 0.8) return maxScore;
+  if (rate <= 1.2) return maxScore * 0.83;
+  if (rate <= 1.5) return maxScore * 0.67;
+  if (rate <= 2.0) return maxScore * 0.33;
+  return maxScore * 0.17;
 }
+
+// --- 评分权重常量 ---
+
+// 基础评分权重：收益能力(35) + 风险控制(35) + 综合评价(30) = 100
+const SCORE_WEIGHT = {
+  // 收益能力 35分
+  SHARPE: 12,
+  SORTINO: 5,
+  RETURN_YEAR1: 8,
+  RETURN_YEAR3: 10,
+  // 风险控制 35分
+  CALMAR: 10,
+  MAX_DRAWDOWN: 18,
+  VOLATILITY: 7,
+  // 综合评价 30分
+  MORNINGSTAR: 8,
+  FUND_SIZE: 8,
+  MANAGER_YEARS: 8,
+  FEE_RATE: 6,
+} as const;
+
+// 动量反转惩罚阈值
+const MOMENTUM_PENALTY = { HIGH: { threshold: 50, penalty: 5 }, MID: { threshold: 30, penalty: 3 } } as const;
+
+// 分时段权重
+const PERIOD_WEIGHT = { YEAR1: 0.4, YEAR3: 0.3, ALL: 0.3 } as const;
+
+// 评分等级比例
+const SCORE_TIER = { FULL: 1, HIGH: 0.8, MID_HIGHER: 0.6, MID_LOWER: 0.53, LOW: 0.33, MIN: 0.2, FLOOR: 0.13 } as const;
 
 // --- 主评分函数 ---
 
@@ -116,6 +212,96 @@ function weightedPeriodScore(
   return totalWeight > 0 ? totalScore / totalWeight : 0;
 }
 
+/** 同类评分：使用分层基准对基金进行同类评分 */
+function scoreFundByTier(
+  data: FundData,
+  tier: RiskTier,
+): { tierScore: number; tierDetails: FundScoreDetail[] } {
+  const { performance: p, meta: m } = data;
+  const rbp = p.riskByPeriod;
+  const tb = TIER_BENCHMARKS[tier];
+  const round1 = (n: number) => Math.round(n * 10) / 10;
+
+  const periodWeights = [
+    { metrics: rbp.year1, weight: PERIOD_WEIGHT.YEAR1 },
+    { metrics: rbp.year3, weight: PERIOD_WEIGHT.YEAR3 },
+    { metrics: rbp.all,   weight: PERIOD_WEIGHT.ALL },
+  ];
+
+  // 分层基准转 Benchmark 格式
+  const sharpeBm: Benchmark = {
+    full: tb.sharpeBenchmark,
+    high: tb.sharpeBenchmark * 0.7,
+    mid: tb.sharpeBenchmark * 0.4,
+    low: tb.sharpeBenchmark * 0.15,
+  };
+  const returnBm: Benchmark = {
+    full: tb.returnBenchmark,
+    high: tb.returnBenchmark * 0.7,
+    mid: tb.returnBenchmark * 0.4,
+    low: 0,
+  };
+  const drawdownBm: Benchmark = {
+    full: tb.drawdownBenchmark,
+    high: tb.drawdownBenchmark * 2,
+    mid: tb.drawdownBenchmark * 4,
+    low: tb.drawdownBenchmark * 6,
+  };
+
+  const W = SCORE_WEIGHT;
+
+  // 收益能力 35分
+  const sharpeVal = weightedPeriodScore(periodWeights,
+    m => scoreHigherBetter(m.sharpeRatio, sharpeBm, W.SHARPE));
+  const sortinoVal = weightedPeriodScore(periodWeights,
+    m => scoreHigherBetter(m.sortinoRatio, sharpeBm, W.SORTINO));
+  const y1Val = scoreHigherBetter(p.returnYear1, returnBm, W.RETURN_YEAR1);
+  const y3Val = scoreHigherBetter(p.returnYear3,
+    { full: returnBm.full * 3, high: returnBm.high * 3, mid: returnBm.mid * 3, low: 0 }, W.RETURN_YEAR3);
+
+  // 风险控制 35分
+  const calmarVal = weightedPeriodScore(periodWeights,
+    m => scoreHigherBetter(m.calmarRatio, sharpeBm, W.CALMAR));
+  const ddVal = weightedPeriodScore(periodWeights,
+    m => scoreLowerBetter(m.maxDrawdown, drawdownBm, W.MAX_DRAWDOWN));
+  const volVal = weightedPeriodScore(periodWeights,
+    m => scoreLowerBetter(m.volatility, drawdownBm, W.VOLATILITY));
+
+  // 综合评价 30分
+  const hasMorningstar = m.morningstarRating > 0;
+  const totalWithoutMs = 100 - W.MORNINGSTAR;
+  const scale = hasMorningstar ? 1 : 100 / totalWithoutMs;
+
+  const msVal = hasMorningstar ? scoreMorningstar(m.morningstarRating, W.MORNINGSTAR) : 0;
+  const sizeVal = scoreFundSize(m.fundSize, W.FUND_SIZE * scale);
+  const mgrVal = scoreManagerYears(m.managerYears, W.MANAGER_YEARS * scale);
+  const feeVal = scoreFeeRate(m.totalFeeRate, W.FEE_RATE * scale);
+
+  const scaledMax = (base: number) => Math.round(base * scale * 10) / 10;
+  const tierDetails: FundScoreDetail[] = [
+    { item: '夏普比率', score: sharpeVal, maxScore: W.SHARPE },
+    { item: '索提诺比率', score: sortinoVal, maxScore: W.SORTINO },
+    { item: '近1年收益', score: y1Val, maxScore: W.RETURN_YEAR1 },
+    { item: '近3年收益', score: y3Val, maxScore: W.RETURN_YEAR3 },
+    { item: '卡玛比率', score: calmarVal, maxScore: W.CALMAR },
+    { item: '最大回撤', score: ddVal, maxScore: W.MAX_DRAWDOWN },
+    { item: '波动率', score: volVal, maxScore: W.VOLATILITY },
+    ...(hasMorningstar
+      ? [{ item: '晨星评级', score: msVal, maxScore: W.MORNINGSTAR }]
+      : []),
+    { item: '基金规模', score: sizeVal, maxScore: scaledMax(W.FUND_SIZE) },
+    { item: '经理年限', score: mgrVal, maxScore: scaledMax(W.MANAGER_YEARS) },
+    { item: '费率', score: feeVal, maxScore: scaledMax(W.FEE_RATE) },
+  ];
+
+  for (const d of tierDetails) {
+    d.score = round1(d.score);
+  }
+
+  const tierScore = round1(tierDetails.reduce((sum, d) => sum + d.score, 0));
+  return { tierScore: Math.min(100, tierScore), tierDetails };
+}
+
 export function scoreFund(data: FundData): FundScore {
   const { performance: p, meta: m, basic } = data;
   const cat = classifyFund(basic.type);
@@ -123,63 +309,103 @@ export function scoreFund(data: FundData): FundScore {
 
   const hasMorningstar = m.morningstarRating > 0;
 
-  // 当晨星评级无数据时，将 15 分按比例重新分配到其他评分项
-  // 原始满分: 收益40 + 风险30 + 综合30 = 100
-  // 无晨星时: 收益47 + 风险35 + 综合18 = 100（按比例放大）
-  const scale = hasMorningstar ? 1 : 100 / 85;
+  // 当晨星评级无数据时，将晨星分数按比例重新分配到其他评分项
+  const totalWithoutMs = 100 - SCORE_WEIGHT.MORNINGSTAR; // 95
+  const scale = hasMorningstar ? 1 : 100 / totalWithoutMs;
 
-  // 分时段权重：近1年 40%，近3年 30%，全历史 30%
   const periodWeights = [
-    { metrics: rbp.year1, weight: 0.4 },
-    { metrics: rbp.year3, weight: 0.3 },
-    { metrics: rbp.all,   weight: 0.3 },
+    { metrics: rbp.year1, weight: PERIOD_WEIGHT.YEAR1 },
+    { metrics: rbp.year3, weight: PERIOD_WEIGHT.YEAR3 },
+    { metrics: rbp.all,   weight: PERIOD_WEIGHT.ALL },
   ];
 
-  // 风险指标使用分时段加权评分
-  const sharpeScoreVal = weightedPeriodScore(periodWeights,
-    m => scoreHigherBetter(m.sharpeRatio, SHARPE_BENCHMARKS[cat], 10 * scale));
-  const drawdownScoreVal = weightedPeriodScore(periodWeights,
-    m => scoreLowerBetter(m.maxDrawdown, DRAWDOWN_BENCHMARKS[cat], 15 * scale));
-  const sortinoScoreVal = weightedPeriodScore(periodWeights,
-    m => scoreHigherBetter(m.sortinoRatio, SORTINO_BENCHMARKS[cat], 10 * scale));
-  const volScoreVal = weightedPeriodScore(periodWeights,
-    m => scoreLowerBetter(m.volatility, VOLATILITY_BENCHMARKS[cat], 5 * scale));
+  const W = SCORE_WEIGHT;
+  const round1 = (n: number) => Math.round(n * 10) / 10;
 
+  // 收益能力 35分
+  const sharpeScoreVal = weightedPeriodScore(periodWeights,
+    m => scoreHigherBetter(m.sharpeRatio, SHARPE_BENCHMARKS[cat], W.SHARPE * scale));
+  const sortinoScoreVal = weightedPeriodScore(periodWeights,
+    m => scoreHigherBetter(m.sortinoRatio, SORTINO_BENCHMARKS[cat], W.SORTINO * scale));
+  const year1Score = scoreHigherBetter(p.returnYear1, RETURN_YEAR1_BENCHMARKS[cat], W.RETURN_YEAR1 * scale);
+  const year3Score = scoreHigherBetter(p.returnYear3, RETURN_YEAR3_BENCHMARKS[cat], W.RETURN_YEAR3 * scale);
+
+  // 风险控制 35分
+  const calmarScoreVal = weightedPeriodScore(periodWeights,
+    m => scoreHigherBetter(m.calmarRatio, CALMAR_BENCHMARKS[cat], W.CALMAR * scale));
+  const drawdownScoreVal = weightedPeriodScore(periodWeights,
+    m => scoreLowerBetter(m.maxDrawdown, DRAWDOWN_BENCHMARKS[cat], W.MAX_DRAWDOWN * scale));
+  const volScoreVal = weightedPeriodScore(periodWeights,
+    m => scoreLowerBetter(m.volatility, VOLATILITY_BENCHMARKS[cat], W.VOLATILITY * scale));
+
+  // 综合评价 30分
+  const morningstarScoreVal = hasMorningstar ? scoreMorningstar(m.morningstarRating, W.MORNINGSTAR) : 0;
+  const sizeScoreVal = scoreFundSize(m.fundSize, W.FUND_SIZE * scale);
+  const mgrScoreVal = scoreManagerYears(m.managerYears, W.MANAGER_YEARS * scale);
+  const feeScoreVal = scoreFeeRate(m.totalFeeRate, W.FEE_RATE * scale);
+
+  const scaledMax = (base: number) => Math.round(base * scale * 10) / 10;
   const details: FundScore['details'] = [
-    { item: '近1年收益', score: scoreHigherBetter(p.returnYear1, RETURN_YEAR1_BENCHMARKS[cat], 15 * scale), maxScore: Math.round(15 * scale * 10) / 10 },
-    { item: '近3年收益', score: scoreHigherBetter(p.returnYear3, RETURN_YEAR3_BENCHMARKS[cat], 15 * scale), maxScore: Math.round(15 * scale * 10) / 10 },
-    { item: '夏普比率', score: sharpeScoreVal, maxScore: Math.round(10 * scale * 10) / 10 },
-    { item: '最大回撤', score: drawdownScoreVal, maxScore: Math.round(15 * scale * 10) / 10 },
-    { item: '索提诺比率', score: sortinoScoreVal, maxScore: Math.round(10 * scale * 10) / 10 },
-    { item: '波动率', score: volScoreVal, maxScore: Math.round(5 * scale * 10) / 10 },
+    { item: '夏普比率', score: sharpeScoreVal, maxScore: scaledMax(W.SHARPE) },
+    { item: '索提诺比率', score: sortinoScoreVal, maxScore: scaledMax(W.SORTINO) },
+    { item: '近1年收益', score: year1Score, maxScore: scaledMax(W.RETURN_YEAR1) },
+    { item: '近3年收益', score: year3Score, maxScore: scaledMax(W.RETURN_YEAR3) },
+    { item: '卡玛比率', score: calmarScoreVal, maxScore: scaledMax(W.CALMAR) },
+    { item: '最大回撤', score: drawdownScoreVal, maxScore: scaledMax(W.MAX_DRAWDOWN) },
+    { item: '波动率', score: volScoreVal, maxScore: scaledMax(W.VOLATILITY) },
     ...(hasMorningstar
-      ? [{ item: '晨星评级', score: scoreMorningstar(m.morningstarRating), maxScore: 15 }]
+      ? [{ item: '晨星评级', score: morningstarScoreVal, maxScore: W.MORNINGSTAR }]
       : []),
-    { item: '基金规模', score: scoreFundSize(m.fundSize), maxScore: 5 },
-    { item: '经理年限', score: scoreManagerYears(m.managerYears), maxScore: 5 },
-    { item: '费率', score: scoreFeeRate(m.totalFeeRate), maxScore: 5 },
+    { item: '基金规模', score: sizeScoreVal, maxScore: scaledMax(W.FUND_SIZE) },
+    { item: '经理年限', score: mgrScoreVal, maxScore: scaledMax(W.MANAGER_YEARS) },
+    { item: '费率', score: feeScoreVal, maxScore: scaledMax(W.FEE_RATE) },
   ];
 
   // 四舍五入所有分数
   for (const d of details) {
-    d.score = Math.round(d.score * 10) / 10;
+    d.score = round1(d.score);
   }
 
-  // 计算分项得分（索引取决于是否有晨星评级）
-  const round1 = (n: number) => Math.round(n * 10) / 10;
-  const returnScore = round1(details[0].score + details[1].score + details[2].score);
-  const riskScore = round1(details[3].score + details[4].score + details[5].score);
-  const morningstarIdx = hasMorningstar ? 6 : -1;
-  const metaStart = hasMorningstar ? 7 : 6;
-  const morningstarScore = morningstarIdx >= 0 ? details[morningstarIdx].score : 0;
-  const overallScore = round1(morningstarScore + details[metaStart].score + details[metaStart + 1].score + details[metaStart + 2].score);
+  // 收益能力 = 夏普 + 索提诺 + 近1年 + 近3年
+  const returnScore = round1(
+    round1(sharpeScoreVal) + round1(sortinoScoreVal) +
+    round1(year1Score) + round1(year3Score)
+  );
+  // 风险控制 = 卡玛 + 最大回撤 + 波动率
+  const riskScore = round1(round1(calmarScoreVal) + round1(drawdownScoreVal) + round1(volScoreVal));
+  // 综合评价
+  const overallScore = round1(
+    round1(morningstarScoreVal) + round1(sizeScoreVal) + round1(mgrScoreVal) + round1(feeScoreVal)
+  );
+
+  let marketScore = round1(returnScore + riskScore + overallScore);
+
+  // 动量反转惩罚：近1年涨幅过高时主动降分
+  const y1Return = safeNum(p.returnYear1);
+  let momentumPenalty = 0;
+  if (y1Return > MOMENTUM_PENALTY.HIGH.threshold) {
+    momentumPenalty = MOMENTUM_PENALTY.HIGH.penalty;
+  } else if (y1Return > MOMENTUM_PENALTY.MID.threshold) {
+    momentumPenalty = MOMENTUM_PENALTY.MID.penalty;
+  }
+  marketScore = round1(Math.max(0, marketScore - momentumPenalty));
+
+  // 分层评分
+  const vol = rbp.all.volatility;
+  const riskTier = classifyRiskTier(basic.type, vol);
+  const { tierScore, tierDetails } = scoreFundByTier(data, riskTier);
 
   return {
     returnScore,
     riskScore,
     overallScore,
-    totalScore: round1(returnScore + riskScore + overallScore),
+    totalScore: marketScore,
+    momentumPenalty,
     details,
+    riskTier,
+    tierScore,
+    marketScore,
+    tierDetails,
   };
 }
 
@@ -191,203 +417,3 @@ export function getScoreLevel(totalScore: number): string {
   return '差 ★';
 }
 
-// ====== 深度评分模型 ======
-// 收益能力(30) + 风险控制(30) + 持仓质量(15) + 稳定性(10) + 综合因素(15) = 100
-
-// --- Alpha 基准 ---
-const ALPHA_BENCHMARKS = {
-  bond:     { full: 0.05, high: 0.03, mid: 0.01, low: -0.02 },
-  balanced: { full: 0.10, high: 0.05, mid: 0.02, low: -0.03 },
-  equity:   { full: 0.15, high: 0.08, mid: 0.03, low: -0.05 },
-} as const;
-
-// --- Beta 基准（越接近 0.8 越好，<1 优先） ---
-function scoreBeta(beta: number, maxScore: number): number {
-  // 理想 beta: 0.6~0.9，>=1 风险高
-  if (beta >= 0.6 && beta <= 0.9) return maxScore;
-  if (beta >= 0.4 && beta < 0.6) return maxScore * 0.8;
-  if (beta > 0.9 && beta <= 1.0) return maxScore * 0.8;
-  if (beta > 1.0 && beta <= 1.2) return maxScore * 0.5;
-  if (beta > 1.2) return maxScore * 0.3;
-  return maxScore * 0.6; // beta < 0.4
-}
-
-// --- VaR 基准（日 VaR，越低越好） ---
-const VAR_BENCHMARKS = {
-  bond:     { full: 0.003, high: 0.005, mid: 0.008, low: 0.012 },
-  balanced: { full: 0.010, high: 0.015, mid: 0.020, low: 0.030 },
-  equity:   { full: 0.015, high: 0.020, mid: 0.030, low: 0.040 },
-} as const;
-
-// --- 月度胜率基准 ---
-const WIN_RATE_BENCHMARKS = {
-  bond:     { full: 0.75, high: 0.65, mid: 0.55, low: 0.45 },
-  balanced: { full: 0.65, high: 0.58, mid: 0.50, low: 0.42 },
-  equity:   { full: 0.60, high: 0.55, mid: 0.48, low: 0.40 },
-} as const;
-
-// --- IR 基准 ---
-const IR_BENCHMARKS = {
-  bond:     { full: 1.5, high: 1.0, mid: 0.5, low: 0.0 },
-  balanced: { full: 1.0, high: 0.7, mid: 0.3, low: 0.0 },
-  equity:   { full: 1.0, high: 0.7, mid: 0.3, low: 0.0 },
-} as const;
-
-// --- 持仓评分辅助 ---
-
-/** 前10大重仓占比评分：20~50% 最佳（适度集中） */
-function scoreTopHoldings(ratio: number, maxScore: number): number {
-  if (ratio >= 20 && ratio <= 50) return maxScore;
-  if (ratio > 50 && ratio <= 65) return maxScore * 0.7;
-  if (ratio > 65) return maxScore * 0.4;
-  if (ratio >= 10 && ratio < 20) return maxScore * 0.8;
-  return maxScore * 0.5; // < 10% 过于分散
-}
-
-/** HHI 评分：0.05~0.15 最佳（适度集中），-1 表示无数据给中间分 */
-function scoreHHI(hhi: number, maxScore: number): number {
-  if (hhi < 0) return maxScore * 0.5; // 无数据
-  if (hhi >= 0.05 && hhi <= 0.15) return maxScore;
-  if (hhi > 0.15 && hhi <= 0.25) return maxScore * 0.7;
-  if (hhi > 0.25) return maxScore * 0.4;
-  if (hhi < 0.05) return maxScore * 0.8; // 超分散
-  return maxScore * 0.5;
-}
-
-/** 滚动收益一致性：用252日窗口正收益比例 */
-function scoreRollingConsistency(positiveRatio: number, maxScore: number): number {
-  if (positiveRatio >= 0.85) return maxScore;
-  if (positiveRatio >= 0.75) return maxScore * 0.8;
-  if (positiveRatio >= 0.60) return maxScore * 0.6;
-  if (positiveRatio >= 0.45) return maxScore * 0.4;
-  return maxScore * 0.2;
-}
-
-/**
- * 深度评分：纳入量化指标和持仓分析
- * 当量化数据不可用时，对应指标给中间分(50%)
- */
-export function scoreFundDeep(
-  data: FundData,
-  quant?: QuantMetrics,
-  holdings?: FundHoldings
-): DeepFundScore {
-  const { performance: p, meta: m, basic } = data;
-  const cat = classifyFund(basic.type);
-  const round1 = (n: number) => Math.round(n * 10) / 10;
-  const details: FundScoreDetail[] = [];
-
-  // ===== 收益能力 (30分) =====
-  // 近1/3年收益 (15分)
-  const retYear1 = scoreHigherBetter(p.returnYear1, RETURN_YEAR1_BENCHMARKS[cat], 8);
-  details.push({ item: '近1年收益', score: retYear1, maxScore: 8 });
-  const retYear3 = scoreHigherBetter(p.returnYear3, RETURN_YEAR3_BENCHMARKS[cat], 7);
-  details.push({ item: '近3年收益', score: retYear3, maxScore: 7 });
-
-  // Alpha (10分)
-  const alphaScore = quant
-    ? scoreHigherBetter(quant.alpha, ALPHA_BENCHMARKS[cat], 10)
-    : 5; // 中间分
-  details.push({ item: 'Alpha超额收益', score: alphaScore, maxScore: 10 });
-
-  // 月度胜率 (5分)
-  const winRateScore = quant
-    ? scoreHigherBetter(quant.monthlyWinRate, WIN_RATE_BENCHMARKS[cat], 5)
-    : 2.5;
-  details.push({ item: '月度胜率', score: winRateScore, maxScore: 5 });
-
-  const returnScore = round1(retYear1 + retYear3 + alphaScore + winRateScore);
-
-  // ===== 风险控制 (30分) =====
-  // 分时段权重：近1年 40%，近3年 30%，全历史 30%
-  const deepPeriodWeights = [
-    { metrics: p.riskByPeriod.year1, weight: 0.4 },
-    { metrics: p.riskByPeriod.year3, weight: 0.3 },
-    { metrics: p.riskByPeriod.all,   weight: 0.3 },
-  ];
-
-  // 夏普 (10分)
-  const sharpeScore = weightedPeriodScore(deepPeriodWeights,
-    m => scoreHigherBetter(m.sharpeRatio, SHARPE_BENCHMARKS[cat], 10));
-  details.push({ item: '夏普比率', score: sharpeScore, maxScore: 10 });
-
-  // 最大回撤 (8分)
-  const drawdownScore = weightedPeriodScore(deepPeriodWeights,
-    m => scoreLowerBetter(m.maxDrawdown, DRAWDOWN_BENCHMARKS[cat], 8));
-  details.push({ item: '最大回撤', score: drawdownScore, maxScore: 8 });
-
-  // Beta (5分)
-  const betaScore = quant ? scoreBeta(quant.beta, 5) : 2.5;
-  details.push({ item: 'Beta系数', score: betaScore, maxScore: 5 });
-
-  // VaR (4分)
-  const varScore = quant
-    ? scoreLowerBetter(quant.var95, VAR_BENCHMARKS[cat], 4)
-    : 2;
-  details.push({ item: 'VaR(95%)', score: varScore, maxScore: 4 });
-
-  // 波动率 (3分)
-  const volScore = weightedPeriodScore(deepPeriodWeights,
-    m => scoreLowerBetter(m.volatility, VOLATILITY_BENCHMARKS[cat], 3));
-  details.push({ item: '波动率', score: volScore, maxScore: 3 });
-
-  const riskScore = round1(sharpeScore + drawdownScore + betaScore + varScore + volScore);
-
-  // ===== 持仓质量 (15分) =====
-  // HHI (8分)
-  const hhiScore = holdings ? scoreHHI(quant?.hhi ?? 0, 8) : 4;
-  details.push({ item: '行业集中度HHI', score: hhiScore, maxScore: 8 });
-
-  // 前10大重仓占比 (7分)
-  const topHoldScore = holdings
-    ? scoreTopHoldings(quant?.topHoldingsRatio ?? 0, 7)
-    : 3.5;
-  details.push({ item: '重仓占比', score: topHoldScore, maxScore: 7 });
-
-  const holdingScore = round1(hhiScore + topHoldScore);
-
-  // ===== 稳定性 (10分) =====
-  // IR (5分)
-  const irScore = quant
-    ? scoreHigherBetter(quant.informationRatio, IR_BENCHMARKS[cat], 5)
-    : 2.5;
-  details.push({ item: '信息比率IR', score: irScore, maxScore: 5 });
-
-  // 滚动收益一致性 (5分) — 用 CAGR>0 作为代理指标
-  // 如果有 quant.cagr，使用 cagr > 0 判断；无数据给中间分
-  const consistencyScore = quant
-    ? scoreRollingConsistency(quant.cagr > 0 ? 0.7 : 0.4, 5)
-    : 2.5;
-  details.push({ item: '收益一致性', score: consistencyScore, maxScore: 5 });
-
-  const stabilityScore = round1(irScore + consistencyScore);
-
-  // ===== 综合因素 (15分) =====
-  const sizeScore = scoreFundSize(m.fundSize);
-  details.push({ item: '基金规模', score: sizeScore, maxScore: 5 });
-
-  const mgrScore = scoreManagerYears(m.managerYears);
-  details.push({ item: '经理年限', score: mgrScore, maxScore: 5 });
-
-  const msScore = m.morningstarRating > 0 ? scoreMorningstar(m.morningstarRating) / 3 : 2.5;
-  details.push({ item: '晨星评级', score: msScore, maxScore: 5 });
-
-  const overallScore = round1(sizeScore + mgrScore + msScore);
-
-  // 四舍五入所有 detail 分数
-  for (const d of details) {
-    d.score = round1(d.score);
-  }
-
-  const totalScore = round1(returnScore + riskScore + holdingScore + stabilityScore + overallScore);
-
-  return {
-    returnScore,
-    riskScore,
-    holdingScore,
-    stabilityScore,
-    overallScore,
-    totalScore,
-    details,
-  };
-}

@@ -1,4 +1,5 @@
 /** @entry analyzers barrel export */
+export { calcCalmarRatio, calcMultiPeriodRiskMetrics } from './calcRiskMetrics.js';
 export {
   calcRollingReturns,
   calcCAGR,
@@ -29,3 +30,5 @@ export {
   drawdownBuyBacktest,
 } from './backtester.js';
 export type { SIPResult, HoldingPeriodDist, DrawdownBuyResult } from './backtester.js';
+
+export { calcTechnicalSignals } from './calcTechnicalSignals.js';

@@ -1,11 +1,21 @@
+/** @entry formatter - 终端格式化输出 */
 import chalk from 'chalk';
 import Table from 'cli-table3';
+import { RiskTier } from '../types/fund.js';
 import type { FundAnalysis, QuantMetrics, FundHoldings, BacktestResult, DeepFundScore, PeriodRiskBreakdown, PeriodRiskMetrics, FundPerformance } from '../types/fund.js';
 import type { HoldingAnalysis } from '../analyzers/holdingAnalyzer.js';
 import type { SIPResult, HoldingPeriodDist } from '../analyzers/backtester.js';
 import { getScoreLevel, classifyFund } from '../scorers/fundScorer.js';
 
 const CATEGORY_LABELS = { bond: '债券类', balanced: '平衡类', equity: '股票类' } as const;
+
+export const TIER_LABELS: Record<RiskTier, string> = {
+  [RiskTier.VERY_LOW]: '极低风险',
+  [RiskTier.LOW]: '低风险',
+  [RiskTier.MEDIUM]: '中风险',
+  [RiskTier.MEDIUM_HIGH]: '中高风险',
+  [RiskTier.HIGH]: '高风险',
+};
 
 function renderMorningstar(rating: number): string {
   if (rating <= 0) return '无评级';
@@ -19,7 +29,7 @@ function renderProgressBar(score: number, maxScore: number, width = 20): string 
   return `[${'█'.repeat(filled)}${'░'.repeat(empty)}] ${score}/${maxScore}`;
 }
 
-function colorScore(score: number): string {
+export function colorScore(score: number): string {
   if (score >= 70) return chalk.green.bold(`${score}`);
   if (score >= 55) return chalk.yellow.bold(`${score}`);
   return chalk.red.bold(`${score}`);
@@ -34,11 +44,25 @@ export function formatFundAnalysis(analysis: FundAnalysis): void {
   console.log(chalk.cyan.bold(`═══ ${basic.name} (${basic.code}) ═══`));
   const cat = classifyFund(basic.type);
   const catLabel = CATEGORY_LABELS[cat];
+  const tierLabel = TIER_LABELS[score.riskTier];
   const stars = renderMorningstar(meta.morningstarRating);
-  console.log(chalk.gray(`类型: ${basic.type || '未知'} [${catLabel}]  成立日期: ${basic.establishDate || '未知'}  晨星: ${stars}`));
+  console.log(chalk.gray(`类型: ${basic.type || '未知'} [${catLabel}]  风险层级: ${tierLabel}  晨星: ${stars}`));
   console.log('');
 
+  // 评分概览
+  const marketLevel = getScoreLevel(score.marketScore);
+  const tierLevel = getScoreLevel(score.tierScore);
+  console.log(`  同类评分: ${colorScore(score.tierScore)}/100 ${tierLevel}${score.tierRank ? `  同类排名${score.tierRank}` : ''}`);
+  console.log(`  全市场评分: ${colorScore(score.marketScore)}/100 ${marketLevel}`);
+  console.log('');
+
+  // 关键指标摘要
+  const r1 = performance.riskByPeriod.year1 ?? performance.riskByPeriod.all;
+  console.log(chalk.gray(`  近1年收益: ${performance.returnYear1}%  回撤: ${r1.maxDrawdown.toFixed(2)}%  夏普: ${r1.sharpeRatio}  卡玛: ${r1.calmarRatio}`));
+  console.log(chalk.gray(`  近3年收益: ${performance.returnYear3}%  规模: ${meta.fundSize}亿  经理: ${meta.managerYears}年`));
+
   // 评分详情表格
+  console.log('');
   const table = new Table({
     head: [chalk.white.bold('评分项'), chalk.white.bold('得分'), chalk.white.bold('进度')],
     colWidths: [14, 10, 30],
@@ -50,16 +74,8 @@ export function formatFundAnalysis(analysis: FundAnalysis): void {
 
   console.log(table.toString());
 
-  // 总分和评级
-  const level = getScoreLevel(score.totalScore);
-  console.log('');
-  console.log(`  收益能力: ${score.returnScore}/40  风险控制: ${score.riskScore}/30  综合评价: ${score.overallScore}/30`);
-  console.log(`  总分: ${colorScore(score.totalScore)}/100  评级: ${level}`);
-
-  // 关键指标摘要
-  console.log('');
-  console.log(chalk.gray('关键指标:'));
-  console.log(chalk.gray(`  近1年收益 ${performance.returnYear1}%  近3年收益 ${performance.returnYear3}%  规模 ${meta.fundSize}亿`));
+  // 维度分
+  console.log(`  收益能力: ${score.returnScore}/35  风险控制: ${score.riskScore}/35  综合评价: ${score.overallScore}/30${score.momentumPenalty > 0 ? `  动量惩罚: -${score.momentumPenalty}` : ''}`);
 
   // 分时段风险指标
   console.log('');
@@ -87,6 +103,7 @@ function formatRiskByPeriod(rbp: PeriodRiskBreakdown): void {
     { label: '年化波动率', key: 'volatility', isPercent: true },
     { label: '夏普比率', key: 'sharpeRatio', isPercent: false },
     { label: '索提诺比率', key: 'sortinoRatio', isPercent: false },
+    { label: '卡玛比率', key: 'calmarRatio', isPercent: false },
   ];
 
   for (const { label, key, isPercent } of rows) {
@@ -179,7 +196,8 @@ export function formatCompareTable(analysis1: FundAnalysis, analysis2: FundAnaly
     ['基金规模(亿)', d1.meta.fundSize, d2.meta.fundSize],
     ['经理年限', d1.meta.managerYears, d2.meta.managerYears],
     ['费率%', d1.meta.totalFeeRate, d2.meta.totalFeeRate],
-    ['总分', s1.totalScore, s2.totalScore],
+    ['全市场评分', s1.totalScore, s2.totalScore],
+    ['同类评分', s1.tierScore, s2.tierScore],
   ];
 
   for (const [label, v1, v2] of rows) {
@@ -200,43 +218,67 @@ export function formatCompareTable(analysis1: FundAnalysis, analysis2: FundAnaly
 
   // 评级对比
   console.log('');
-  console.log(`  ${d1.basic.name}: ${colorScore(s1.totalScore)}/100 ${getScoreLevel(s1.totalScore)}`);
-  console.log(`  ${d2.basic.name}: ${colorScore(s2.totalScore)}/100 ${getScoreLevel(s2.totalScore)}`);
+  console.log(`  ${d1.basic.name}: ${colorScore(s1.totalScore)}/100 ${getScoreLevel(s1.totalScore)}  同类: ${colorScore(s1.tierScore)} [${TIER_LABELS[s1.riskTier]}]`);
+  console.log(`  ${d2.basic.name}: ${colorScore(s2.totalScore)}/100 ${getScoreLevel(s2.totalScore)}  同类: ${colorScore(s2.tierScore)} [${TIER_LABELS[s2.riskTier]}]`);
+
+  if (s1.riskTier !== s2.riskTier) {
+    console.log('');
+    console.log(chalk.yellow('  ⚠ 跨层级对比仅供参考，建议重点关注同类评分'));
+  }
   console.log('');
 }
 
 export function formatBatchSummary(analyses: FundAnalysis[]): void {
-  const sorted = [...analyses].sort((a, b) => b.score.totalScore - a.score.totalScore);
-
   console.log('');
-  console.log(chalk.cyan.bold(`═══ 批量分析结果（共 ${sorted.length} 只）═══`));
-  console.log('');
+  console.log(chalk.cyan.bold(`═══ 批量分析结果（共 ${analyses.length} 只）═══`));
 
-  const table = new Table({
-    head: [
-      chalk.white.bold('排名'),
-      chalk.white.bold('基金名称'),
-      chalk.white.bold('代码'),
-      chalk.white.bold('类型'),
-      chalk.white.bold('总分'),
-      chalk.white.bold('评级'),
-    ],
-    colWidths: [6, 24, 10, 8, 8, 16],
-  });
+  // 按风险层级分组
+  const tierOrder = [RiskTier.VERY_LOW, RiskTier.LOW, RiskTier.MEDIUM, RiskTier.MEDIUM_HIGH, RiskTier.HIGH];
+  const groups = new Map<RiskTier, FundAnalysis[]>();
+  for (const a of analyses) {
+    const tier = a.score.riskTier;
+    if (!groups.has(tier)) groups.set(tier, []);
+    groups.get(tier)!.push(a);
+  }
 
-  sorted.forEach((a, i) => {
-    const cat = classifyFund(a.data.basic.type);
-    table.push([
-      `${i + 1}`,
-      a.data.basic.name,
-      a.data.basic.code,
-      CATEGORY_LABELS[cat],
-      colorScore(a.score.totalScore),
-      getScoreLevel(a.score.totalScore),
-    ]);
-  });
+  // 每组内按同类评分排序
+  for (const [tier, items] of groups) {
+    items.sort((a, b) => b.score.tierScore - a.score.tierScore);
+  }
 
-  console.log(table.toString());
+  for (const tier of tierOrder) {
+    const items = groups.get(tier);
+    if (!items || items.length === 0) continue;
+
+    console.log('');
+    console.log(chalk.yellow.bold(`── ${TIER_LABELS[tier]} (${items.length}只) ──`));
+
+    const table = new Table({
+      head: [
+        chalk.white.bold('#'),
+        chalk.white.bold('基金名称'),
+        chalk.white.bold('代码'),
+        chalk.white.bold('同类分'),
+        chalk.white.bold('全市场'),
+        chalk.white.bold('评级'),
+      ],
+      colWidths: [4, 24, 10, 8, 8, 16],
+    });
+
+    items.forEach((a, i) => {
+      table.push([
+        `${i + 1}`,
+        a.data.basic.name,
+        a.data.basic.code,
+        colorScore(a.score.tierScore),
+        colorScore(a.score.totalScore),
+        getScoreLevel(a.score.tierScore),
+      ]);
+    });
+
+    console.log(table.toString());
+  }
+
   console.log('');
 }
 
