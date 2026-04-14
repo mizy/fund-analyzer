@@ -9,6 +9,7 @@ export type {
   PeriodRiskBreakdown,
   FundPerformance,
   FundMeta,
+  FundRealtimeValuation,
   FundData,
   FundScoreDetail,
   FundScore,
@@ -22,6 +23,7 @@ export type {
   QuantMetrics,
   BacktestResult,
   FundListItem,
+  FundRankingItem,
 } from './fund.js';
 export type {
   IndexValuation,

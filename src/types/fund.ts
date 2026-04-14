@@ -1,5 +1,10 @@
 export type FundCategory = 'bond' | 'balanced' | 'equity';
 
+export interface FundRankingItem {
+  code: string;
+  name: string;
+}
+
 // 风险层级分类
 export enum RiskTier {
   VERY_LOW = 'very_low',       // 货币基金、超短债
@@ -60,10 +65,19 @@ export interface FundMeta {
   totalFeeRate: number; // %
 }
 
+export interface FundRealtimeValuation {
+  navDate: string; // 最新净值日期
+  nav: number; // 最新净值
+  estimatedNav: number; // 估算净值
+  changePercent: number; // 实时涨跌幅 %
+  updateTime: string; // 估值时间 YYYY-MM-DD HH:mm
+}
+
 export interface FundData {
   basic: FundBasicInfo;
   performance: FundPerformance;
   meta: FundMeta;
+  realtime: FundRealtimeValuation | null;
 }
 
 export interface FundScoreDetail {

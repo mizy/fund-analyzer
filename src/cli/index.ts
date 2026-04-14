@@ -9,6 +9,8 @@ import { registerCompareCommand } from './commands/compareCommand.js';
 import { registerDetailCommand, registerBacktestCommand, registerHoldingsCommand } from './commands/detailCommand.js';
 import { registerNotifyTestCommand, registerScoringBacktestCommand } from './commands/scoringBacktestCommand.js';
 import { registerAnalyzeIndexCommand } from './commands/analyzeIndexCommand.js';
+import { registerDailyReportCommand } from './commands/dailyReportCommand.js';
+import { registerLeaderboardCommand } from './commands/leaderboardCommand.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(resolve(__dirname, '../package.json'), 'utf-8')) as { version: string };
@@ -29,5 +31,7 @@ registerHoldingsCommand(program);
 registerNotifyTestCommand(program);
 registerScoringBacktestCommand(program);
 registerAnalyzeIndexCommand(program);
+registerDailyReportCommand(program);
+registerLeaderboardCommand(program);
 
 program.parse();

@@ -1,5 +1,5 @@
 /** @entry fetcher - 天天基金数据抓取 */
-import type { FundData, FundHoldings, HoldingStock, FundListItem } from "../types/fund.js";
+import type { FundData, FundHoldings, HoldingStock, FundListItem, FundRealtimeValuation } from "../types/fund.js";
 import { fetchWithRetry } from "./httpClient.js";
 import { extractVar, extractJsonVar, toNavArray, type NavPoint } from "./parseUtils.js";
 import { calcMultiPeriodRiskMetrics } from "../analyzers/calcRiskMetrics.js";
@@ -61,15 +61,60 @@ async function fetchPingzhongData(code: string) {
   };
 }
 
+function parseRealtimeValuation(js: string): FundRealtimeValuation {
+  const jsonMatch = js.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    throw new Error('估值接口返回格式异常');
+  }
+
+  const payload = JSON.parse(jsonMatch[0]) as {
+    jzrq?: string;
+    dwjz?: string;
+    gsz?: string;
+    gszzl?: string;
+    gztime?: string;
+  };
+
+  const nav = parseFloat(payload.dwjz ?? '');
+  const estimatedNav = parseFloat(payload.gsz ?? '');
+  const changePercent = parseFloat(payload.gszzl ?? '');
+  const updateTime = payload.gztime ?? '';
+
+  if (!Number.isFinite(nav) || !Number.isFinite(estimatedNav) || !Number.isFinite(changePercent) || !updateTime) {
+    throw new Error('估值接口缺少关键字段');
+  }
+
+  return {
+    navDate: payload.jzrq ?? '',
+    nav,
+    estimatedNav,
+    changePercent,
+    updateTime,
+  };
+}
+
+export async function fetchFundRealtimeValuation(code: string): Promise<FundRealtimeValuation> {
+  const url = `https://fundgz.1234567.com.cn/js/${code}.js`;
+  const { data: js } = await fetchWithRetry<string>(url, {
+    params: { rt: Date.now() },
+    headers: {
+      Referer: `https://fund.eastmoney.com/${code}.html`,
+    },
+  });
+
+  return parseRealtimeValuation(js);
+}
+
 /** Fetch complete fund data (assembles pingzhong + detail + rating) */
 export async function fetchFundData(code: string): Promise<FundData> {
-  const [pingzhong, detail, returnYear3, morningstarRating] = await Promise.all([
+  const [pingzhong, detail, returnYear3, morningstarRating, realtime] = await Promise.all([
     fetchPingzhongData(code),
     fetchFundDetail(code).catch(() => ({
       type: "", establishDate: "", fundSize: 0, totalFeeRate: 0,
     })),
     fetchReturnYear3(code).catch(() => 0),
     fetchMorningstarRating(code),
+    fetchFundRealtimeValuation(code).catch(() => null),
   ]);
 
   const rating = morningstarRating > 0
@@ -99,6 +144,7 @@ export async function fetchFundData(code: string): Promise<FundData> {
       managerYears: pingzhong.managerYears,
       totalFeeRate: detail.totalFeeRate,
     },
+    realtime,
   };
 }
 
