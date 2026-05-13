@@ -99,7 +99,10 @@ export interface FundScore {
   marketScore: number; // 全市场评分（= totalScore）
   tierRank?: string; // 如 "前5%"
   tierDetails: FundScoreDetail[]; // 同类评分详情
+  riskTierCoefficient: number; // 风险层级系数（如 HIGH=1.10），用于计算风险加权得分
+  riskWeightedScore: number; // 风险加权评分 = tierScore × riskTierCoefficient（上限100），跨风险层级可比
 }
+
 
 export interface DeepFundScore {
   returnScore: number;    // 满30

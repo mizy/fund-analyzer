@@ -62,6 +62,16 @@ const TIER_BENCHMARKS: Record<RiskTier, TierBenchmark> = {
   [RiskTier.HIGH]:     { sharpeBenchmark: 1.0, returnBenchmark: 35,  drawdownBenchmark: 20 },
 };
 
+// --- 风险层级系数 ---
+// 用于计算风险加权评分（riskWeightedScore），使不同风险层级的基金得分横向可比
+const RISK_TIER_COEFFICIENTS: Record<RiskTier, number> = {
+  [RiskTier.VERY_LOW]: 0.85,
+  [RiskTier.LOW]: 0.92,
+  [RiskTier.MEDIUM]: 1.00,
+  [RiskTier.MEDIUM_HIGH]: 1.08,
+  [RiskTier.HIGH]: 1.15,
+};
+
 // --- 各类型基准值配置 ---
 
 const RETURN_YEAR1_BENCHMARKS = {
@@ -395,6 +405,10 @@ export function scoreFund(data: FundData): FundScore {
   const riskTier = classifyRiskTier(basic.type, vol);
   const { tierScore, tierDetails } = scoreFundByTier(data, riskTier);
 
+  // 风险加权评分：按风险层级系数调整，使跨层级的评分横向可比
+  const riskTierCoefficient = RISK_TIER_COEFFICIENTS[riskTier];
+  const riskWeightedScore = round1(Math.min(100, tierScore * riskTierCoefficient));
+
   return {
     returnScore,
     riskScore,
@@ -406,6 +420,8 @@ export function scoreFund(data: FundData): FundScore {
     tierScore,
     marketScore,
     tierDetails,
+    riskTierCoefficient,
+    riskWeightedScore,
   };
 }
 

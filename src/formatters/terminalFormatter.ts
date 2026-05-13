@@ -54,6 +54,9 @@ export function formatFundAnalysis(analysis: FundAnalysis): void {
   const tierLevel = getScoreLevel(score.tierScore);
   console.log(`  同类评分: ${colorScore(score.tierScore)}/100 ${tierLevel}${score.tierRank ? `  同类排名${score.tierRank}` : ''}`);
   console.log(`  全市场评分: ${colorScore(score.marketScore)}/100 ${marketLevel}`);
+  const coeff = score.riskTierCoefficient;
+  const adjLevel = getScoreLevel(score.riskWeightedScore);
+  console.log(`  风险加权评分: ${colorScore(score.riskWeightedScore)}/100 ${adjLevel}  (风险层级: ${tierLabel}, 系数: ${coeff.toFixed(2)})`);
   console.log('');
 
   // 关键指标摘要
@@ -218,8 +221,8 @@ export function formatCompareTable(analysis1: FundAnalysis, analysis2: FundAnaly
 
   // 评级对比
   console.log('');
-  console.log(`  ${d1.basic.name}: ${colorScore(s1.totalScore)}/100 ${getScoreLevel(s1.totalScore)}  同类: ${colorScore(s1.tierScore)} [${TIER_LABELS[s1.riskTier]}]`);
-  console.log(`  ${d2.basic.name}: ${colorScore(s2.totalScore)}/100 ${getScoreLevel(s2.totalScore)}  同类: ${colorScore(s2.tierScore)} [${TIER_LABELS[s2.riskTier]}]`);
+  console.log(`  ${d1.basic.name}: ${colorScore(s1.totalScore)}/100 ${getScoreLevel(s1.totalScore)}  同类: ${colorScore(s1.tierScore)}  风险加权: ${colorScore(s1.riskWeightedScore)} [${TIER_LABELS[s1.riskTier]}]`);
+  console.log(`  ${d2.basic.name}: ${colorScore(s2.totalScore)}/100 ${getScoreLevel(s2.totalScore)}  同类: ${colorScore(s2.tierScore)}  风险加权: ${colorScore(s2.riskWeightedScore)} [${TIER_LABELS[s2.riskTier]}]`);
 
   if (s1.riskTier !== s2.riskTier) {
     console.log('');
@@ -272,6 +275,7 @@ export function formatBatchSummary(analyses: FundAnalysis[]): void {
         a.data.basic.code,
         colorScore(a.score.tierScore),
         colorScore(a.score.totalScore),
+        colorScore(a.score.riskWeightedScore),
         getScoreLevel(a.score.tierScore),
       ]);
     });
