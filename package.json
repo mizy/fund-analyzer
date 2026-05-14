@@ -1,7 +1,7 @@
 {
   "name": "fund-analyzer",
   "version": "1.0.0",
-  "description": "",
+  "description": "基金分析器项目",
   "type": "module",
   "main": "index.js",
   "bin": {
