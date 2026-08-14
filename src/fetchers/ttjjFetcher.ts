@@ -93,16 +93,62 @@ function parseRealtimeValuation(js: string): FundRealtimeValuation {
   };
 }
 
-export async function fetchFundRealtimeValuation(code: string): Promise<FundRealtimeValuation> {
-  const url = `https://fundgz.1234567.com.cn/js/${code}.js`;
-  const { data: js } = await fetchWithRetry<string>(url, {
-    params: { rt: Date.now() },
+/**
+ * Fallback: fetch latest confirmed NAV from the eastmoney lsjz API
+ * (used when the real-time fundgz endpoint is unavailable)
+ */
+interface LsjzItem {
+  FSRQ: string;   // date
+  DWJZ: string;   // unit NAV
+  LJJZ: string;   // accumulated NAV
+  JZZZL: string;  // daily change %
+}
+
+async function fetchLatestNavFallback(code: string): Promise<FundRealtimeValuation> {
+  const url = `https://api.fund.eastmoney.com/f10/lsjz`;
+  const { data: text } = await fetchWithRetry<string>(url, {
+    params: { callback: 'jQuery', fundCode: code, pageIndex: 1, pageSize: 1 },
     headers: {
-      Referer: `https://fund.eastmoney.com/${code}.html`,
+      Referer: `https://fundf10.eastmoney.com/`,
     },
   });
 
-  return parseRealtimeValuation(js);
+  const jsonMatch = text.match(/jQuery\((.*)\)$/);
+  if (!jsonMatch) throw new Error('lsjz fallback: JSONP parse failed');
+
+  const parsed = JSON.parse(jsonMatch[1]);
+  const list: LsjzItem[] = parsed?.Data?.LSJZList;
+  if (!list || list.length === 0) throw new Error('lsjz fallback: empty data');
+
+  const item = list[0];
+  const nav = parseFloat(item.DWJZ);
+  const changePercent = parseFloat(item.JZZZL);
+  if (!Number.isFinite(nav)) throw new Error('lsjz fallback: invalid NAV');
+
+  return {
+    navDate: item.FSRQ,
+    nav,
+    estimatedNav: 0,      // no real-time estimate available
+    changePercent: Number.isFinite(changePercent) ? changePercent : 0,
+    updateTime: `${item.FSRQ} 15:00`,
+  };
+}
+
+export async function fetchFundRealtimeValuation(code: string): Promise<FundRealtimeValuation> {
+  // Try the real-time fundgz endpoint first
+  try {
+    const url = `https://fundgz.1234567.com.cn/js/${code}.js`;
+    const { data: js } = await fetchWithRetry<string>(url, {
+      params: { rt: Date.now() },
+      headers: {
+        Referer: `https://fund.eastmoney.com/${code}.html`,
+      },
+    });
+    return parseRealtimeValuation(js);
+  } catch {
+    // Fallback to latest confirmed NAV when real-time endpoint is unavailable
+    return fetchLatestNavFallback(code);
+  }
 }
 
 /** Fetch complete fund data (assembles pingzhong + detail + rating) */
