@@ -90,6 +90,8 @@ function parseRealtimeValuation(js: string): FundRealtimeValuation {
     estimatedNav,
     changePercent,
     updateTime,
+    source: 'fundgz',
+    isRealtime: true,
   };
 }
 
@@ -131,9 +133,20 @@ async function fetchLatestNavFallback(code: string): Promise<FundRealtimeValuati
     estimatedNav: 0,      // no real-time estimate available
     changePercent: Number.isFinite(changePercent) ? changePercent : 0,
     updateTime: `${item.FSRQ} 15:00`,
+    source: 'nav-fallback',
+    isRealtime: false,
   };
 }
 
+/**
+ * 抓取基金盘中估值。
+ *
+ * 优先打东财 fundgz 实时估算源；2026-10-16 实测该源返回「页面未找到」HTML
+ * （HTTP 200 但非 JSON），东财基金页估值块为 `--`、移动端接口 `GSZ` 返回 null ——
+ * 上游盘中估算接口已不可用。
+ * 因此当前几乎总是走回落：返回**上一交易日已确认净值**，并在 `source` 上显式标注，
+ * 让调用方（如 fund-daily 日报）一眼分辨「实时」与「回落」，不再静默把昨日数据当今日播报。
+ */
 export async function fetchFundRealtimeValuation(code: string): Promise<FundRealtimeValuation> {
   // Try the real-time fundgz endpoint first
   try {

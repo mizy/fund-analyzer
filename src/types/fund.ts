@@ -65,12 +65,22 @@ export interface FundMeta {
   totalFeeRate: number; // %
 }
 
+/**
+ * 实时估值来源。
+ * - `fundgz`：天天基金盘中估算接口，字段为当日盘中估算；上游已停服，当前基本不可达
+ * - `nav-fallback`：回落态，取上一交易日**已确认净值**（此时 `estimatedNav` 恒为 0，
+ *   `changePercent` 为上一交易日涨跌幅，`navDate` 为确认净值日期）
+ */
+export type RealtimeSource = 'fundgz' | 'nav-fallback';
+
 export interface FundRealtimeValuation {
-  navDate: string; // 最新净值日期
+  navDate: string; // 最新净值日期（判断数据是否为当天，只看它）
   nav: number; // 最新净值
-  estimatedNav: number; // 估算净值
-  changePercent: number; // 实时涨跌幅 %
+  estimatedNav: number; // 估算净值（回落态恒为 0）
+  changePercent: number; // 涨跌幅 %（fundgz 态=今日盘中估算；回落态=上一交易日已确认）
   updateTime: string; // 估值时间 YYYY-MM-DD HH:mm
+  source: RealtimeSource; // 本次数值来源，调用方据此判断是否回落
+  isRealtime: boolean; // 是否盘中实时估值（等价于 source === 'fundgz'）
 }
 
 export interface FundData {

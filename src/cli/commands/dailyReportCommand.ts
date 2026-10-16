@@ -60,6 +60,14 @@ function toFactItem(analysis: FundAnalysis): DailyReportFactItem {
   };
 }
 
+/** 把实时估值的来源翻译成一眼可读的「数据状态」，避免把回落态误读成今日实时 */
+function describeRealtimeStatus(realtime: FundAnalysis['data']['realtime']): string {
+  if (!realtime) return '缺失';
+  return realtime.isRealtime
+    ? '盘中实时估算'
+    : '回落·上一交易日确认净值';
+}
+
 function formatTextFacts(payload: DailyReportFactPayload): string {
   const lines: string[] = [
     `基金客观数据快照 ${payload.generatedAt}`,
@@ -67,11 +75,14 @@ function formatTextFacts(payload: DailyReportFactPayload): string {
   ];
 
   for (const fund of payload.funds) {
+    const rt = fund.realtime;
     lines.push(`${fund.name}(${fund.code})`);
     lines.push(`- 类型: ${fund.type || '未知'}`);
-    lines.push(`- 实时估值: ${fund.realtime?.estimatedNav ?? '--'}`);
-    lines.push(`- 实时涨跌幅: ${fund.realtime?.changePercent ?? '--'}%`);
-    lines.push(`- 估值时间: ${fund.realtime?.updateTime ?? '--'}`);
+    lines.push(`- 数据状态: ${describeRealtimeStatus(rt)}`);
+    lines.push(`- 净值日期: ${rt?.navDate ?? '--'}`);
+    lines.push(`- 实时估值: ${rt?.isRealtime ? rt.estimatedNav : '--'}`);
+    lines.push(`- 涨跌幅: ${rt?.changePercent ?? '--'}%${rt && !rt.isRealtime ? ' (上一交易日已确认)' : ''}`);
+    lines.push(`- 估值时间: ${rt?.updateTime ?? '--'}`);
     lines.push(`- 近1年收益: ${fund.performance.returnYear1}%`);
     lines.push(`- 近3年收益: ${fund.performance.returnYear3}%`);
     lines.push(`- 最大回撤: ${fund.performance.maxDrawdown}%`);
